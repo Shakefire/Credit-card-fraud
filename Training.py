@@ -9,9 +9,14 @@ from sklearn.ensemble import RandomForestClassifier
 import joblib
 import seaborn as sns
 import matplotlib.pyplot as plt
+from datetime import time as dtime
 
 sns.set_style("whitegrid")
 plt.rcParams["figure.figsize"] = (7, 5)
+
+# ==============================
+# Training Section
+# ==============================
 
 # Load dataset
 url = "https://storage.googleapis.com/download.tensorflow.org/data/creditcard.csv"
@@ -20,12 +25,9 @@ df = pd.read_csv(url)
 print("Dataset shape:", df.shape)
 print("\nClass distribution:\n", df["Class"].value_counts())
 
-# === Placeholder for additional features ===
-# Add columns or process your dataset here for:
-# V1 to V8, date, time (seconds), location (lat, lon), previous transaction metadata, bank, card info, etc.
-
-# Separate features and target
-X = df.drop("Class", axis=1)
+# Feature selection (match Streamlit UI)
+selected_features = ["Time", "Amount"] + [f"V{i}" for i in range(1, 9)]
+X = df[selected_features]
 y = df["Class"]
 
 # Scale Time and Amount
@@ -63,7 +65,9 @@ def train_and_evaluate():
         print(f"{name} ROC AUC: {auc_score:.4f}")
         print(classification_report(y_test, y_pred, digits=4))
 
-    results_df = pd.DataFrame.from_dict(results, orient="index", columns=["ROC AUC"]).sort_values(by="ROC AUC", ascending=False)
+    results_df = pd.DataFrame.from_dict(
+        results, orient="index", columns=["ROC AUC"]
+    ).sort_values(by="ROC AUC", ascending=False)
     print("\nModel comparison by ROC AUC:\n", results_df)
 
     # Save best model and scaler
@@ -73,5 +77,69 @@ def train_and_evaluate():
     joblib.dump(scaler, "scaler.pkl")
     print(f"Best model saved: {best_model_name}")
 
+# Train and save artifacts
+train_and_evaluate()
+
+# ==============================
+# Prediction Section
+# ==============================
+
+# Load best model and scaler
+model = joblib.load("best_fraud_model.pkl")
+scaler = joblib.load("scaler.pkl")
+
+def compute_risk_level(prob):
+    if prob < 0.3:
+        return "Low"
+    elif prob < 0.7:
+        return "Medium"
+    else:
+        return "High"
+
+def predict_transaction(time_obj, amount, v_features):
+    """
+    Predict fraud for a single transaction.
+    Parameters:
+        time_obj : datetime.time
+        amount   : float
+        v_features : list of length 8 (V1–V8 values)
+    Returns:
+        dict with Prediction, Fraud Probability, Risk Level
+    """
+    if len(v_features) != 8:
+        raise ValueError("v_features must contain exactly 8 values (V1–V8).")
+
+    # Convert time to seconds
+    total_seconds = time_obj.hour * 3600 + time_obj.minute * 60 + time_obj.second
+
+    # Scale only Time and Amount
+    scaled_time_amount = scaler.transform([[total_seconds, amount]])[0]
+
+    # Combine scaled (Time, Amount) with raw V1–V8
+    input_features = np.array([list(scaled_time_amount) + list(v_features)])
+
+    # Prediction
+    pred = model.predict(input_features)[0]
+    prob = (
+        model.predict_proba(input_features)[:, 1][0]
+        if hasattr(model, "predict_proba")
+        else model.decision_function(input_features)[0]
+    )
+
+    return {
+        "Prediction": "Fraudulent" if pred == 1 else "Legitimate",
+        "Fraud Probability": round(prob, 4),
+        "Risk Level": compute_risk_level(prob),
+    }
+
+# ==============================
+# Example usage
+# ==============================
+
 if __name__ == "__main__":
-    train_and_evaluate()
+    example = predict_transaction(
+        time_obj=dtime(14, 35, 20),
+        amount=250.00,
+        v_features=[0.1, -1.2, 0.5, 2.3, -0.7, 1.1, 0.0, -0.5]
+    )
+    print("\nExample prediction:", example)￼Enter
