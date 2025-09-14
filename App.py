@@ -1,3 +1,12 @@
+# app.py
+# Streamlit UI for Credit Card Fraud Detection
+# ---------------------------------------------------------
+# ✅ Consistent with training notebook:
+# - Uses dumped best model (best_fraud_model.pkl)
+# - Uses dumped scaler (scaler.pkl) fitted on ["Time","Amount"]
+# - Predicts with ["Time","Amount"] (scaled) + [V1–V8] (raw)
+# ---------------------------------------------------------
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,9 +15,14 @@ import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
-from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve, classification_report
 
+from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve
+
+# ---------------------------------------------------------
+# Streamlit & Plot Setup
+# ---------------------------------------------------------
 sns.set_style("whitegrid")
+plt.rcParams["figure.figsize"] = (7, 5)
 
 st.set_page_config(
     page_title="Credit Card Fraud Detection",
@@ -17,7 +31,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Load model and scaler
+# ---------------------------------------------------------
+# Load Artifacts (Model + Scaler)
+# ---------------------------------------------------------
 @st.cache_resource
 def load_artifacts():
     model = joblib.load("best_fraud_model.pkl")
@@ -26,7 +42,9 @@ def load_artifacts():
 
 model, scaler = load_artifacts()
 
-# Initialize prediction history
+# ---------------------------------------------------------
+# Initialize Prediction History
+# ---------------------------------------------------------
 if "history" not in st.session_state:
     st.session_state["history"] = pd.DataFrame(
         columns=[
@@ -37,20 +55,9 @@ if "history" not in st.session_state:
         ]
     )
 
-st.sidebar.title("Settings")
-
-mode = st.sidebar.radio("Prediction Mode", ["Single Transaction", "Batch Prediction"])
-
-show_insights = st.sidebar.checkbox("Show Model Insights", value=True)
-
-# Card information inputs
-st.sidebar.subheader("Card Information")
-card_holder_name = st.sidebar.text_input("Card Holder Name")
-bank_name = st.sidebar.text_input("Bank Name")
-card_number = st.sidebar.text_input("Card Number")
-
-st.title("💳 Credit Card Fraud Detection System")
-
+# ---------------------------------------------------------
+# Helper Functions
+# ---------------------------------------------------------
 def compute_risk(prob):
     if prob < 0.3:
         return "Low"
@@ -67,22 +74,48 @@ def display_prediction(prediction, probability):
         st.success(f"✅ Legitimate Transaction\nConfidence: {1 - probability:.2f}, Risk Level: {risk}")
 
 def add_to_history(entry):
-    st.session_state["history"] = pd.concat([st.session_state["history"], entry], ignore_index=True)
+    st.session_state["history"] = pd.concat(
+        [st.session_state["history"], entry], ignore_index=True
+    )
 
 def show_history():
     st.subheader("Prediction History")
     if not st.session_state["history"].empty:
-        hist_df = st.session_state["history"].sort_values(by="Timestamp", ascending=False).reset_index(drop=True)
+        hist_df = st.session_state["history"].sort_values(
+            by="Timestamp", ascending=False
+        ).reset_index(drop=True)
         st.dataframe(hist_df)
         csv_export = hist_df.to_csv(index=False).encode("utf-8")
-        st.download_button("Download History CSV", data=csv_export, file_name="prediction_history.csv")
+        st.download_button(
+            "Download History CSV", data=csv_export, file_name="prediction_history.csv"
+        )
     else:
         st.info("No prediction history yet.")
 
+# ---------------------------------------------------------
+# Sidebar Configuration
+# ---------------------------------------------------------
+st.sidebar.title("Settings")
+mode = st.sidebar.radio("Prediction Mode", ["Single Transaction", "Batch Prediction"])
+show_insights = st.sidebar.checkbox("Show Model Insights", value=True)
+
+st.sidebar.subheader("Card Information")
+card_holder_name = st.sidebar.text_input("Card Holder Name")
+bank_name = st.sidebar.text_input("Bank Name")
+card_number = st.sidebar.text_input("Card Number")
+
+# ---------------------------------------------------------
+# App Title
+# ---------------------------------------------------------
+st.title("💳 Credit Card Fraud Detection System")
+
+# ---------------------------------------------------------
+# SINGLE TRANSACTION MODE
+# ---------------------------------------------------------
 if mode == "Single Transaction":
     st.subheader("Enter Transaction Details")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
     with col1:
         date_val = st.date_input("Date")
@@ -97,34 +130,44 @@ if mode == "Single Transaction":
             v_features.append(val)
 
     if st.button("Predict"):
+        # --- Prepare Input ---
+        # Convert time to seconds from midnight
         seconds = time_val.hour * 3600 + time_val.minute * 60 + time_val.second
-        features = np.array([[seconds, amount_val] + v_features])
-        features_scaled = scaler.transform(features)
+        # Scale only Time and Amount
+        time_amount = np.array([[seconds, amount_val]])
+        scaled_time_amount = scaler.transform(time_amount)
+        # Concatenate with raw V1–V8
+        features_scaled = np.hstack(
+            [scaled_time_amount, np.array(v_features).reshape(1, -1)]
+        )
 
+        # --- Make Prediction ---
         prediction = model.predict(features_scaled)[0]
-        probability = (model.predict_proba(features_scaled)[:, 1][0]
-                       if hasattr(model, "predict_proba")
-                       else model.decision_function(features_scaled)[0])
+        probability = (
+            model.predict_proba(features_scaled)[:, 1][0]
+            if hasattr(model, "predict_proba")
+            else model.decision_function(features_scaled)[0]
+        )
 
         display_prediction(prediction, probability)
 
-        # SHAP explainability
+        # --- SHAP Explanation ---
         explainer = shap.Explainer(model, features_scaled)
         shap_values = explainer(features_scaled)
         st.subheader("Prediction Explanation (SHAP)")
         shap.plots.waterfall(shap_values[0], max_display=10)
         st.pyplot(plt)
 
-        # Show location on map
+        # --- Location on Map ---
         if location_val:
             try:
                 lat, lon = map(float, location_val.split(","))
                 st.subheader("Transaction Location")
                 st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}))
             except Exception:
-                st.warning("Invalid location format, please enter as 'latitude, longitude'")
+                st.warning("Invalid location format. Please enter as 'latitude, longitude'")
 
-        # Save to history
+        # --- Save to History ---
         entry = pd.DataFrame([{
             "Timestamp": datetime.now(),
             "Card Holder": card_holder_name,
@@ -141,6 +184,9 @@ if mode == "Single Transaction":
         }])
         add_to_history(entry)
 
+# ---------------------------------------------------------
+# BATCH PREDICTION MODE
+# ---------------------------------------------------------
 else:
     st.subheader("Batch Prediction via CSV Upload")
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
@@ -148,15 +194,19 @@ else:
         df = pd.read_csv(uploaded_file)
         required_cols = ["Time", "Amount"] + [f"V{i}" for i in range(1, 9)]
         missing_cols = [col for col in required_cols if col not in df.columns]
+
         if missing_cols:
             st.error(f"CSV missing required columns: {missing_cols}")
         else:
+            # Scale only Time & Amount
             df[["Time", "Amount"]] = scaler.transform(df[["Time", "Amount"]])
-
+            # Predict
             preds = model.predict(df[required_cols])
-            probs = (model.predict_proba(df[required_cols])[:, 1]
-                     if hasattr(model, "predict_proba")
-                     else model.decision_function(df[required_cols]))
+            probs = (
+                model.predict_proba(df[required_cols])[:, 1]
+                if hasattr(model, "predict_proba")
+                else model.decision_function(df[required_cols])
+            )
 
             df["Prediction"] = preds
             df["Fraud Probability"] = probs
@@ -165,6 +215,7 @@ else:
             st.write("Batch Prediction Results")
             st.dataframe(df.head())
 
+            # Save to history
             batch_history = df.copy()
             batch_history["Timestamp"] = datetime.now()
             batch_history["Card Holder"] = card_holder_name
@@ -172,15 +223,25 @@ else:
             batch_history["Card Number"] = card_number
             add_to_history(batch_history)
 
+            # Download button
             csv_bytes = df.to_csv(index=False).encode("utf-8")
-            st.download_button("Download Batch Predictions CSV", data=csv_bytes, file_name="batch_predictions.csv")
+            st.download_button(
+                "Download Batch Predictions CSV",
+                data=csv_bytes,
+                file_name="batch_predictions.csv",
+            )
 
+# ---------------------------------------------------------
+# Show Prediction History
+# ---------------------------------------------------------
 show_history()
 
+# ---------------------------------------------------------
+# Insights (Demo Visualization)
+# ---------------------------------------------------------
 if show_insights:
     st.subheader("Model Performance Insights (Demo Data)")
 
-    # Confusion Matrix (placeholder)
     cm = np.array([[56780, 10], [20, 80]])
     fig, ax = plt.subplots()
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False, ax=ax)
@@ -189,7 +250,6 @@ if show_insights:
     ax.set_title("Confusion Matrix")
     st.pyplot(fig)
 
-    # ROC Curve (demo)
     fpr, tpr, _ = roc_curve([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8])
     roc_auc = auc(fpr, tpr)
     fig2, ax2 = plt.subplots()
@@ -201,7 +261,6 @@ if show_insights:
     ax2.legend(loc="lower right")
     st.pyplot(fig2)
 
-    # Precision-Recall Curve (demo)
     precision, recall, _ = precision_recall_curve([0, 1, 1, 0], [0.1, 0.9, 0.8, 0.2])
     fig3, ax3 = plt.subplots()
     ax3.plot(recall, precision, marker=".")
@@ -210,6 +269,9 @@ if show_insights:
     ax3.set_ylabel("Precision")
     st.pyplot(fig3)
 
+# ---------------------------------------------------------
+# Report Generation
+# ---------------------------------------------------------
 st.subheader("Generate Detailed Report and Simulate Email Output")
 
 if st.button("Generate Report"):
@@ -217,8 +279,11 @@ if st.button("Generate Report"):
         st.warning("No prediction history available for report.")
     else:
         last_entry = st.session_state["history"].iloc[-1]
-        features_list = [f"V{i}={last_entry['V' + str(i)]:.4f}" for i in range(1, 9)]
-        features_str = ', '.join(features_list)
+        features_list = [
+            f"V{i}={last_entry['V' + str(i)]:.4f}" for i in range(1, 9)
+        ]
+        features_str = ", ".join(features_list)
+
         report = f"""
 Credit Card Fraud Detection Report
 -----------------------------------
@@ -236,6 +301,6 @@ Confidence: {last_entry['Fraud Probability']:.4f}
 Risk Level: {last_entry['Risk Level']}
 """
         st.text_area("Generated Report", report, height=300)
-        st.text("Simulated Email Output (view in terminal/log):")
+        st.text("Simulated Email Output (check terminal/logs)")
         print("\n=== Fraud Detection Report Email ===\n")
         print(report)
